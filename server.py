@@ -1,5 +1,6 @@
 import asyncio
 import os
+import re
 import time
 import uuid
 
@@ -10,6 +11,37 @@ from flask import Flask, request, jsonify
 from render_reel import render_reel
 
 app = Flask(__name__)
+
+LISTING_BASE_URL = "https://www.lwautogroup.com/inventory"
+
+
+def build_listing_url(vehicle):
+    """Reconstructs the real, live per-vehicle page URL on lwautogroup.com
+    from fields already present on every webhook payload (year/make/model/
+    trim/id) — no separate lookup needed. Confirmed against the site's own
+    generated URLs for all 6 vehicles live when this was built:
+    https://www.lwautogroup.com/inventory/{year-make-model[-trim]}-{last 6
+    hex chars of the vehicle's id}.html — e.g. the 2009 Mercedes-Benz E 320
+    Bluetec (id ...56493e6c) is 2009-mercedes-benz-e-320-bluetec-493e6c.html.
+    The site builds its slug straight from the make/model/trim text as
+    stored, typos and all (an "Infinti" vehicle nets an "infinti" URL), so
+    this reproduces it exactly, data-entry quirks included."""
+    year = vehicle.get("year", "")
+    make = vehicle.get("make", "")
+    model = vehicle.get("model", "")
+    trim = vehicle.get("trim", "")
+    vehicle_id = vehicle.get("id") or vehicle.get("vehicle_id") or ""
+
+    parts = [str(year), str(make), str(model)]
+    if trim:
+        parts.append(str(trim))
+    base = "-".join(parts)
+    slug = re.sub(r"[^a-z0-9]+", "-", base.lower()).strip("-")
+    id_suffix = re.sub(r"[^0-9a-f]", "", str(vehicle_id).lower())[-6:]
+
+    if not slug or not id_suffix:
+        return None
+    return f"{LISTING_BASE_URL}/{slug}-{id_suffix}.html"
 
 API_KEY = os.environ.get("RENDER_API_KEY")  # shared secret Make.com must send
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "").rstrip("/")
@@ -112,6 +144,23 @@ def tts_sample():
             os.remove(out_mp3)
 
 
+@app.post("/vehicle-url")
+def vehicle_url():
+    """Fast, no-render lookup used early in the Make scenario (right after
+    the webhook fires) so Facebook/Instagram/GBP/YouTube captions can all
+    include a real link to this exact vehicle's page — without waiting on
+    the slow video render."""
+    auth_err = _require_api_key()
+    if auth_err:
+        return auth_err
+
+    vehicle = request.get_json(force=True, silent=True) or {}
+    url = build_listing_url(vehicle)
+    if not url:
+        return jsonify({"ok": False, "error": "could not build listing_url — missing year/make/model or id"}), 400
+    return jsonify({"ok": True, "listing_url": url})
+
+
 @app.post("/render")
 def render():
     auth_err = _require_api_key()
@@ -131,7 +180,12 @@ def render():
         script_text = render_reel(vehicle, out_path)
         video_url = _upload_to_supabase(out_path, out_name)
         _mark_vehicle_rendered(vehicle.get("vehicle_id"), video_url)
-        return jsonify({"ok": True, "video_url": video_url, "script": script_text})
+        return jsonify({
+            "ok": True,
+            "video_url": video_url,
+            "script": script_text,
+            "listing_url": build_listing_url(vehicle),
+        })
     except Exception as e:
         app.logger.exception("render failed")
         return jsonify({"ok": False, "error": str(e)}), 500
