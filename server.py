@@ -1,5 +1,4 @@
 import asyncio
-import base64
 import os
 import time
 import uuid
@@ -49,7 +48,7 @@ def _require_api_key():
     return None
 
 
-def _upload_to_supabase(local_path, dest_name):
+def _upload_to_supabase(local_path, dest_name, content_type="video/mp4"):
     url = f"{SUPABASE_URL}/storage/v1/object/{REELS_BUCKET}/{dest_name}"
     with open(local_path, "rb") as f:
         resp = requests.post(
@@ -57,7 +56,7 @@ def _upload_to_supabase(local_path, dest_name):
             headers={
                 "apikey": SUPABASE_SERVICE_ROLE_KEY,
                 "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
-                "Content-Type": "video/mp4",
+                "Content-Type": content_type,
                 "x-upsert": "true",
             },
             data=f,
@@ -88,7 +87,8 @@ def _mark_vehicle_rendered(vehicle_id, video_url):
 def tts_sample():
     """Quick way to preview a voice/line without rendering a full video —
     used to compare candidate edge-tts voices for realism before picking
-    a new DEFAULT_VOICE. Returns raw mp3 bytes, base64-encoded, in JSON."""
+    a new DEFAULT_VOICE. Uploads the sample mp3 to Supabase storage
+    (under samples/) and returns its public URL to listen to directly."""
     auth_err = _require_api_key()
     if auth_err:
         return auth_err
@@ -100,9 +100,9 @@ def tts_sample():
     out_mp3 = f"/tmp/sample_{uuid.uuid4().hex}.mp3"
     try:
         asyncio.run(edge_tts.Communicate(text, voice).save(out_mp3))
-        with open(out_mp3, "rb") as f:
-            audio_b64 = base64.b64encode(f.read()).decode("ascii")
-        return jsonify({"ok": True, "voice": voice, "audio_base64": audio_b64})
+        dest_name = f"samples/{voice}_{int(time.time())}.mp3"
+        sample_url = _upload_to_supabase(out_mp3, dest_name, content_type="audio/mpeg")
+        return jsonify({"ok": True, "voice": voice, "sample_url": sample_url})
     except Exception as e:
         app.logger.exception("tts-sample failed")
         return jsonify({"ok": False, "error": str(e)}), 500
