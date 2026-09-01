@@ -1,7 +1,10 @@
+import asyncio
+import base64
 import os
 import time
 import uuid
 
+import edge_tts
 import requests
 from flask import Flask, request, jsonify
 
@@ -79,6 +82,33 @@ def _mark_vehicle_rendered(vehicle_id, video_url):
         json={"reel_url": video_url, "reel_status": "rendered"},
         timeout=20,
     )
+
+
+@app.post("/tts-sample")
+def tts_sample():
+    """Quick way to preview a voice/line without rendering a full video —
+    used to compare candidate edge-tts voices for realism before picking
+    a new DEFAULT_VOICE. Returns raw mp3 bytes, base64-encoded, in JSON."""
+    auth_err = _require_api_key()
+    if auth_err:
+        return auth_err
+
+    body = request.get_json(force=True, silent=True) or {}
+    text = body.get("text") or "This is a sample voice for Lawrenceville Motors."
+    voice = body.get("voice") or "en-US-GuyNeural"
+
+    out_mp3 = f"/tmp/sample_{uuid.uuid4().hex}.mp3"
+    try:
+        asyncio.run(edge_tts.Communicate(text, voice).save(out_mp3))
+        with open(out_mp3, "rb") as f:
+            audio_b64 = base64.b64encode(f.read()).decode("ascii")
+        return jsonify({"ok": True, "voice": voice, "audio_base64": audio_b64})
+    except Exception as e:
+        app.logger.exception("tts-sample failed")
+        return jsonify({"ok": False, "error": str(e)}), 500
+    finally:
+        if os.path.exists(out_mp3):
+            os.remove(out_mp3)
 
 
 @app.post("/render")
