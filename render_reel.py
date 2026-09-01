@@ -21,15 +21,15 @@ import requests
 from PIL import Image, ImageDraw, ImageFont
 import edge_tts
 
-W, H = 1080, 1920
-FPS = 16  # free-tier CPU can't keep up at 24fps across a full photo set in time
+W, H = 720, 1280  # free-tier CPU is far too slow to encode 1080x1920 in time
+FPS = 12  # fewer frames to render/encode; still smooth for a slow Ken Burns pan
 SEC_PER_PHOTO = 3.2
 # Cap how large a fetched photo is kept before Ken Burns cropping. Phone
 # photos can be 3000-4000px wide; without this, every one of the ~100+
 # per-frame crop/resize ops re-processes the full-size image, which is what
 # blew past the free-tier request timeout during testing. Downsizing once,
 # right after download, keeps each frame op cheap.
-MAX_SRC_DIM = 2200
+MAX_SRC_DIM = 1600
 MUSIC_DUCK_DB = -22
 FONT_BOLD = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 FONT_REG = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
@@ -125,11 +125,21 @@ def _draw_stroked(d, xy, text, font, fill, stroke_fill="black", stroke_width=4, 
     d.text(xy, text, font=font, fill=fill, anchor=anchor, stroke_width=stroke_width, stroke_fill=stroke_fill)
 
 
-def draw_overlay(frame, title, subtitle, cta):
-    d = ImageDraw.Draw(frame)
-    _draw_stroked(d, (W / 2, 150), title, _font(60, bold=True), "white")
-    _draw_stroked(d, (W / 2, H - 560), subtitle, _font(52, bold=True), "#ffd23f")
-    _draw_stroked(d, (W / 2, H - 460), cta, _font(38), "white", stroke_width=3)
+def build_overlay_layer(title, subtitle, cta):
+    """Render the text overlay once onto a transparent layer. Re-drawing
+    stroked text on every one of a few hundred frames was a meaningful chunk
+    of render time; pasting one pre-rendered layer per frame is much cheaper."""
+    layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    d = ImageDraw.Draw(layer)
+    scale = H / 1920  # positions/font sizes were tuned for a 1080x1920 frame
+    _draw_stroked(d, (W / 2, 150 * scale), title, _font(max(int(60 * scale), 14), bold=True), "white")
+    _draw_stroked(d, (W / 2, H - 560 * scale), subtitle, _font(max(int(52 * scale), 12), bold=True), "#ffd23f")
+    _draw_stroked(d, (W / 2, H - 460 * scale), cta, _font(max(int(38 * scale), 10)), "white", stroke_width=3)
+    return layer
+
+
+def draw_overlay(frame, overlay_layer):
+    frame.paste(overlay_layer, (0, 0), overlay_layer)
     return frame
 
 
@@ -158,6 +168,7 @@ def kenburns_frame(src, frame_idx, total_frames, zoom_in):
 
 def render_frames(photo_urls, frames_dir, fps, sec_per_photo, title, subtitle, cta):
     os.makedirs(frames_dir, exist_ok=True)
+    overlay_layer = build_overlay_layer(title, subtitle, cta)
     idx = 0
     for i, url in enumerate(photo_urls):
         src = fetch_photo(url)
@@ -165,8 +176,8 @@ def render_frames(photo_urls, frames_dir, fps, sec_per_photo, title, subtitle, c
         zoom_in = (i % 2 == 0)
         for f in range(n_frames):
             frame = kenburns_frame(src, f, n_frames, zoom_in)
-            draw_overlay(frame, title, subtitle, cta)
-            frame.save(os.path.join(frames_dir, f"frame_{idx:06d}.jpg"), quality=90)
+            draw_overlay(frame, overlay_layer)
+            frame.save(os.path.join(frames_dir, f"frame_{idx:06d}.jpg"), quality=85)
             idx += 1
     return idx
 
@@ -175,7 +186,8 @@ def encode_video(frames_dir, fps, out_mp4):
     run([
         "ffmpeg", "-y", "-framerate", str(fps),
         "-i", os.path.join(frames_dir, "frame_%06d.jpg"),
-        "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", out_mp4,
+        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "26",
+        "-pix_fmt", "yuv420p", out_mp4,
     ])
 
 
