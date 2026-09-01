@@ -35,7 +35,7 @@ FONT_BOLD = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 FONT_REG = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
 ASSETS_DIR = os.path.join(os.path.dirname(__file__), "assets")
 MUSIC_BED_PATH = os.path.join(ASSETS_DIR, "music_bed.mp3")
-DEFAULT_VOICE = "en-US-GuyNeural"
+DEFAULT_VOICE = "en-US-AndrewMultilingualNeural"
 
 
 def run(cmd):
