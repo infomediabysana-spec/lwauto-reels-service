@@ -203,6 +203,11 @@ def mux_audio(video_only, voice_wav, music_wav, out_mp4):
         "-filter_complex", filt,
         "-map", "0:v", "-map", "[aout]",
         "-c:v", "copy", "-c:a", "aac", "-b:a", "160k",
+        # Puts the moov atom at the front of the file instead of the end —
+        # without this, browsers/Facebook's own ingestion have to fetch the
+        # whole file before they can start playback (this is very likely why
+        # the first test render sat spinning in Chrome's video preview).
+        "-movflags", "+faststart",
         "-shortest", out_mp4,
     ])
 
