@@ -15,6 +15,23 @@ SUPABASE_SERVICE_ROLE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
 REELS_BUCKET = "vehicle-reels"
 
 
+@app.after_request
+def add_cors_headers(resp):
+    # Allows testing/calling this from a browser (Render dashboard console,
+    # a future admin page, etc.) in addition to Make.com's server-side calls.
+    resp.headers["Access-Control-Allow-Origin"] = "*"
+    resp.headers["Access-Control-Allow-Headers"] = "Content-Type, X-API-Key"
+    resp.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+    return resp
+
+
+@app.route("/render", methods=["OPTIONS"])
+def render_options():
+    # CORS preflight for the JSON POST — browsers send this before the real
+    # request because it has a Content-Type: application/json body.
+    return ("", 204)
+
+
 @app.get("/healthz")
 def healthz():
     return {"ok": True}
