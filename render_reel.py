@@ -22,8 +22,14 @@ from PIL import Image, ImageDraw, ImageFont
 import edge_tts
 
 W, H = 1080, 1920
-FPS = 24
+FPS = 16  # free-tier CPU can't keep up at 24fps across a full photo set in time
 SEC_PER_PHOTO = 3.2
+# Cap how large a fetched photo is kept before Ken Burns cropping. Phone
+# photos can be 3000-4000px wide; without this, every one of the ~100+
+# per-frame crop/resize ops re-processes the full-size image, which is what
+# blew past the free-tier request timeout during testing. Downsizing once,
+# right after download, keeps each frame op cheap.
+MAX_SRC_DIM = 2200
 MUSIC_DUCK_DB = -22
 FONT_BOLD = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 FONT_REG = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
@@ -62,7 +68,10 @@ def build_script_text(v):
 def fetch_photo(url, timeout=20):
     resp = requests.get(url, timeout=timeout)
     resp.raise_for_status()
-    return Image.open(io.BytesIO(resp.content)).convert("RGB")
+    img = Image.open(io.BytesIO(resp.content)).convert("RGB")
+    if max(img.size) > MAX_SRC_DIM:
+        img.thumbnail((MAX_SRC_DIM, MAX_SRC_DIM), Image.LANCZOS)
+    return img
 
 
 async def _tts(text, voice, out_mp3):

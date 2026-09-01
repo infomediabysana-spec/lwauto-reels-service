@@ -15,6 +15,6 @@ ENV PORT=10000
 EXPOSE 10000
 
 # Long timeout: a reel render (download photos + TTS + ffmpeg encode) can take
-# 30-90s. -w 1 keeps memory low on the free instance; Render only sends one
-# request at a time from Make.com anyway.
-CMD gunicorn -w 1 -b 0.0.0.0:$PORT --timeout 150 server:app
+# a couple minutes on the free instance's shared CPU. -w 1 keeps memory low;
+# Render only sends one request at a time from Make.com anyway.
+CMD gunicorn -w 1 -b 0.0.0.0:$PORT --timeout 280 server:app
