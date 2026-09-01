@@ -18,7 +18,7 @@ import sys
 import tempfile
 
 import requests
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageEnhance
 import edge_tts
 
 W, H = 720, 1280  # free-tier CPU is far too slow to encode 1080x1920 in time
@@ -143,12 +143,16 @@ def draw_overlay(frame, overlay_layer):
     return frame
 
 
-def kenburns_frame(src, frame_idx, total_frames, zoom_in):
+def kenburns_bg_frame(bg_base, frame_idx, total_frames, zoom_in):
+    """Cover-crop + Ken Burns zoom/pan, applied to the blurred BACKGROUND
+    layer only (never to the actual sharp vehicle photo). This layer exists
+    purely to fill the 9:16 frame edge-to-edge behind the real photo, so
+    cropping it is fine — nothing important is ever in it."""
     t = frame_idx / max(total_frames - 1, 1)
     z0, z1 = (1.0, 1.16) if zoom_in else (1.16, 1.0)
     zoom = z0 + (z1 - z0) * t
 
-    src_w, src_h = src.size
+    src_w, src_h = bg_base.size
     target_ratio = W / H
     if src_w / src_h > target_ratio:
         base_h = src_h
@@ -162,8 +166,32 @@ def kenburns_frame(src, frame_idx, total_frames, zoom_in):
     cx, cy = src_w / 2, src_h / 2
     x0 = int(max(0, min(src_w - crop_w, cx - crop_w / 2)))
     y0 = int(max(0, min(src_h - crop_h, cy - crop_h / 2)))
-    crop = src.crop((x0, y0, x0 + crop_w, y0 + crop_h))
+    crop = bg_base.crop((x0, y0, x0 + crop_w, y0 + crop_h))
     return crop.resize((W, H), Image.LANCZOS)
+
+
+def build_background_base(src):
+    """Blurred, darkened, full-frame-covering backdrop that the Ken Burns
+    pan/zoom runs on. Because it's blurred, cropping it to fill 9:16 loses
+    nothing recognizable — it's just atmosphere behind the real photo."""
+    bg = src.copy()
+    bg = bg.filter(ImageFilter.GaussianBlur(radius=28))
+    bg = ImageEnhance.Brightness(bg).enhance(0.55)
+    return bg
+
+
+def build_foreground(src):
+    """The actual vehicle photo, shown in full — 'contain fit' scaled down
+    to fit entirely inside the 9:16 frame with no cropping, then centered.
+    This is what was missing before: the old code force-cropped every photo
+    to fill the frame exactly, which chopped off the sides of the car and,
+    combined with the Ken Burns zoom, made it look zoomed-in and blurry."""
+    src_w, src_h = src.size
+    scale = min(W / src_w, H / src_h)
+    fg_w, fg_h = max(int(src_w * scale), 1), max(int(src_h * scale), 1)
+    fg = src.resize((fg_w, fg_h), Image.LANCZOS)
+    px, py = (W - fg_w) // 2, (H - fg_h) // 2
+    return fg, px, py
 
 
 def render_frames(photo_urls, frames_dir, fps, sec_per_photo, title, subtitle, cta):
@@ -172,12 +200,18 @@ def render_frames(photo_urls, frames_dir, fps, sec_per_photo, title, subtitle, c
     idx = 0
     for i, url in enumerate(photo_urls):
         src = fetch_photo(url)
+        # Background (blurred/zoomed) and foreground (sharp/static) are each
+        # built once per photo, not once per frame — the per-frame cost is
+        # just a crop+resize of the background plus two pastes.
+        bg_base = build_background_base(src)
+        fg, fg_x, fg_y = build_foreground(src)
         n_frames = int(sec_per_photo * fps)
         zoom_in = (i % 2 == 0)
         for f in range(n_frames):
-            frame = kenburns_frame(src, f, n_frames, zoom_in)
+            frame = kenburns_bg_frame(bg_base, f, n_frames, zoom_in)
+            frame.paste(fg, (fg_x, fg_y))
             draw_overlay(frame, overlay_layer)
-            frame.save(os.path.join(frames_dir, f"frame_{idx:06d}.jpg"), quality=85)
+            frame.save(os.path.join(frames_dir, f"frame_{idx:06d}.jpg"), quality=92)
             idx += 1
     return idx
 
@@ -186,7 +220,7 @@ def encode_video(frames_dir, fps, out_mp4):
     run([
         "ffmpeg", "-y", "-framerate", str(fps),
         "-i", os.path.join(frames_dir, "frame_%06d.jpg"),
-        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "26",
+        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
         "-pix_fmt", "yuv420p", out_mp4,
     ])
 
