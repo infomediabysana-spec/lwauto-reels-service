@@ -62,7 +62,8 @@ def _upload_to_supabase(local_path, dest_name, content_type="video/mp4"):
             data=f,
             timeout=60,
         )
-    resp.raise_for_status()
+    if not resp.ok:
+        raise RuntimeError(f"Supabase upload failed ({resp.status_code}): {resp.text[:300]}")
     return f"{SUPABASE_URL}/storage/v1/object/public/{REELS_BUCKET}/{dest_name}"
 
 
@@ -100,7 +101,7 @@ def tts_sample():
     out_mp3 = f"/tmp/sample_{uuid.uuid4().hex}.mp3"
     try:
         asyncio.run(edge_tts.Communicate(text, voice).save(out_mp3))
-        dest_name = f"samples/{voice}_{int(time.time())}.mp3"
+        dest_name = f"sample-{voice}-{int(time.time())}.mp3"
         sample_url = _upload_to_supabase(out_mp3, dest_name, content_type="audio/mpeg")
         return jsonify({"ok": True, "voice": voice, "sample_url": sample_url})
     except Exception as e:
