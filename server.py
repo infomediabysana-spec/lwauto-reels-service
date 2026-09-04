@@ -1,14 +1,12 @@
-import asyncio
 import os
 import re
 import time
 import uuid
 
-import edge_tts
 import requests
 from flask import Flask, request, jsonify
 
-from render_reel import render_reel
+from render_reel import DEFAULT_VOICE, render_reel, synthesize_voice
 
 app = Flask(__name__)
 
@@ -119,20 +117,21 @@ def _mark_vehicle_rendered(vehicle_id, video_url):
 @app.post("/tts-sample")
 def tts_sample():
     """Quick way to preview a voice/line without rendering a full video —
-    used to compare candidate edge-tts voices for realism before picking
-    a new DEFAULT_VOICE. Uploads the sample mp3 to Supabase storage
-    (under samples/) and returns its public URL to listen to directly."""
+    e.g. to A/B ElevenLabs voice-settings tweaks (stability/similarity)
+    before changing the defaults in render_reel.py. Uploads the sample mp3
+    to Supabase storage (under samples/) and returns its public URL to
+    listen to directly."""
     auth_err = _require_api_key()
     if auth_err:
         return auth_err
 
     body = request.get_json(force=True, silent=True) or {}
     text = body.get("text") or "This is a sample voice for Lawrenceville Motors."
-    voice = body.get("voice") or "en-US-GuyNeural"
+    voice = body.get("voice") or DEFAULT_VOICE
 
     out_mp3 = f"/tmp/sample_{uuid.uuid4().hex}.mp3"
     try:
-        asyncio.run(edge_tts.Communicate(text, voice).save(out_mp3))
+        synthesize_voice(text, out_mp3, voice_id=voice)
         dest_name = f"sample-{voice}-{int(time.time())}.mp3"
         sample_url = _upload_to_supabase(out_mp3, dest_name, content_type="audio/mpeg")
         return jsonify({"ok": True, "voice": voice, "sample_url": sample_url})

@@ -3,14 +3,13 @@ Lawrenceville Motors — vehicle reel renderer (production core)
 
 Given vehicle data + real photo URLs, produces a finished 9:16 mp4:
 Ken Burns pan/zoom across the photos, price/mileage/CTA text overlay,
-a neural TTS voiceover reading the vehicle's ad copy, mixed with a
-background music bed.
+a voiceover in Alex's own cloned voice (ElevenLabs) reading a script
+written in the dealership's brand voice, mixed with a background music bed.
 
 This is the same approach prototyped and tested in the dev sandbox,
 adapted to run with real internet access (downloads real photos,
-calls the real edge-tts service) instead of offline placeholders.
+calls the real ElevenLabs/Anthropic services) instead of offline placeholders.
 """
-import asyncio
 import io
 import os
 import subprocess
@@ -19,7 +18,6 @@ import tempfile
 
 import requests
 from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageEnhance
-import edge_tts
 
 W, H = 720, 1280  # free-tier CPU is far too slow to encode 1080x1920 in time
 FPS = 12  # fewer frames to render/encode; still smooth for a slow Ken Burns pan
@@ -35,7 +33,26 @@ FONT_BOLD = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 FONT_REG = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
 ASSETS_DIR = os.path.join(os.path.dirname(__file__), "assets")
 MUSIC_BED_PATH = os.path.join(ASSETS_DIR, "music_bed.mp3")
-DEFAULT_VOICE = "en-US-AndrewMultilingualNeural"
+
+# Voice: Alex's own ElevenLabs voice clone — same voice_id used by the daily
+# educational-reel pipeline (lw-reel-render), so both video pipelines sound
+# like the same person.
+ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY")
+DEFAULT_VOICE = os.environ.get("ELEVENLABS_VOICE_ID", "dAVeTABuBwdSUlO93XJl")
+
+# Script: Claude writes the narration in the dealership's brand voice
+# (family owned, no tricks; plain and conversational, not salesy) instead of
+# the old fill-in-the-blanks template, which read stiff and generic. Needs
+# ANTHROPIC_API_KEY set in Render; if it's missing or the call fails, this
+# falls back to the plain template below rather than breaking the render.
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
+ANTHROPIC_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001")
+
+SCRIPT_SYSTEM_PROMPT = """You write short voiceover scripts for Lawrenceville Motors, a family-owned used car dealership in Snellville, GA. Brand voice: family owned, no tricks — plain, conversational, honest. Never salesy, never flowery, no exclamation-point hype, no AI-sounding filler phrases like "look no further" or "you won't want to miss this."
+
+Write ONE tight script (35-55 words, about 15-20 seconds spoken) for a 9:16 Facebook/Instagram Marketplace video for the specific vehicle described. Base it on what's actually distinctive about THIS vehicle (its real features/condition/description) rather than generic filler — lead with whatever's most likely to make a buyer stop scrolling. End with the price, mileage, and a low-key call to action (come see it / message us / call).
+
+Output ONLY the exact words to be spoken aloud. No labels, no headers, no markdown, no stage directions, no quotation marks, no emoji — just the plain narration text, since it is fed directly to text-to-speech."""
 
 
 def run(cmd):
@@ -48,6 +65,8 @@ def money(n):
 
 
 def build_script_text(v):
+    """Plain template fallback — used only if Claude script generation is
+    unavailable (no ANTHROPIC_API_KEY yet, or the API call failed)."""
     year, make, model = v["year"], v["make"], v["model"]
     price, mileage = v["price"], v["mileage"]
     feats = v.get("features") or []
@@ -65,6 +84,55 @@ def build_script_text(v):
     return " ".join(lines)
 
 
+def _vehicle_brief(v):
+    year, make, model = v.get("year"), v.get("make"), v.get("model")
+    trim = v.get("trim")
+    feats = v.get("features") or []
+    if isinstance(feats, str):
+        feats = [feats]
+    lines = [f"Vehicle: {year} {make} {model}" + (f" {trim}" if trim else "")]
+    lines.append(f"Price: {money(v['price'])}")
+    lines.append(f"Mileage: {v['mileage']:,} miles")
+    if feats:
+        lines.append("Features: " + ", ".join(feats))
+    if v.get("description"):
+        lines.append(f"Dealer's own notes on this car: {v['description']}")
+    lines.append(f"Location: {v.get('location', 'Snellville, GA')}")
+    if v.get("phone"):
+        lines.append(f"Phone: {v['phone']}")
+    return "\n".join(lines)
+
+
+def generate_script(v):
+    """Calls Claude to write a brand-voice narration script for this
+    specific vehicle. Raises on any failure — caller decides the fallback."""
+    if not ANTHROPIC_API_KEY:
+        raise RuntimeError("ANTHROPIC_API_KEY not set")
+    resp = requests.post(
+        "https://api.anthropic.com/v1/messages",
+        headers={
+            "x-api-key": ANTHROPIC_API_KEY,
+            "anthropic-version": "2023-06-01",
+            "Content-Type": "application/json",
+        },
+        json={
+            "model": ANTHROPIC_MODEL,
+            "max_tokens": 300,
+            "system": SCRIPT_SYSTEM_PROMPT,
+            "messages": [{"role": "user", "content": _vehicle_brief(v)}],
+        },
+        timeout=30,
+    )
+    if not resp.ok:
+        raise RuntimeError(f"Anthropic script generation failed ({resp.status_code}): {resp.text[:300]}")
+    data = resp.json()
+    text = "".join(block.get("text", "") for block in data.get("content", []) if block.get("type") == "text")
+    text = text.strip().strip('"')
+    if not text:
+        raise RuntimeError("Anthropic returned an empty script")
+    return text
+
+
 def fetch_photo(url, timeout=20):
     resp = requests.get(url, timeout=timeout)
     resp.raise_for_status()
@@ -74,14 +142,34 @@ def fetch_photo(url, timeout=20):
     return img
 
 
-async def _tts(text, voice, out_mp3):
-    communicate = edge_tts.Communicate(text, voice)
-    await communicate.save(out_mp3)
+def synthesize_voice(text, out_mp3, voice_id=None):
+    """Calls ElevenLabs TTS with Alex's cloned voice and writes an mp3."""
+    if not ELEVENLABS_API_KEY:
+        raise RuntimeError("ELEVENLABS_API_KEY not set")
+    voice_id = voice_id or DEFAULT_VOICE
+    resp = requests.post(
+        f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}",
+        headers={
+            "xi-api-key": ELEVENLABS_API_KEY,
+            "Content-Type": "application/json",
+            "Accept": "audio/mpeg",
+        },
+        json={
+            "text": text,
+            "model_id": "eleven_multilingual_v2",
+            "voice_settings": {"stability": 0.5, "similarity_boost": 0.75},
+        },
+        timeout=60,
+    )
+    if not resp.ok:
+        raise RuntimeError(f"ElevenLabs TTS failed ({resp.status_code}): {resp.text[:300]}")
+    with open(out_mp3, "wb") as f:
+        f.write(resp.content)
 
 
-def make_voiceover(text, out_wav, voice=DEFAULT_VOICE):
+def make_voiceover(text, out_wav, voice=None):
     tmp_mp3 = out_wav + ".src.mp3"
-    asyncio.run(_tts(text, voice, tmp_mp3))
+    synthesize_voice(text, tmp_mp3, voice_id=voice)
     # Normalize to wav for consistent ffprobe/ffmpeg handling downstream.
     run(["ffmpeg", "-y", "-i", tmp_mp3, out_wav])
     os.remove(tmp_mp3)
@@ -256,8 +344,14 @@ def render_reel(vehicle, out_mp4):
     video_only = os.path.join(workdir, "video_only.mp4")
 
     try:
-        script_text = vehicle.get("script") or build_script_text(vehicle)
-        make_voiceover(script_text, voice_wav, voice=vehicle.get("voice", DEFAULT_VOICE))
+        script_text = vehicle.get("script")
+        if not script_text:
+            try:
+                script_text = generate_script(vehicle)
+            except Exception as e:
+                print(f"generate_script failed, using template fallback: {e}", file=sys.stderr)
+                script_text = build_script_text(vehicle)
+        make_voiceover(script_text, voice_wav, voice=vehicle.get("voice"))
         voice_len = audio_duration(voice_wav)
 
         photos = vehicle["photos"][:8]  # cap photo count so renders stay fast
