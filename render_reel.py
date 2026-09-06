@@ -52,7 +52,9 @@ SCRIPT_SYSTEM_PROMPT = """You write short voiceover scripts for Lawrenceville Mo
 
 Write ONE tight script (35-55 words, about 15-20 seconds spoken) for a 9:16 Facebook/Instagram Marketplace video for the specific vehicle described. Base it on what's actually distinctive about THIS vehicle (its real features/condition/description) rather than generic filler — lead with whatever's most likely to make a buyer stop scrolling. End with the price, mileage, and a low-key call to action (come see it / message us / call).
 
-Output ONLY the exact words to be spoken aloud. No labels, no headers, no markdown, no stage directions, no quotation marks, no emoji — just the plain narration text, since it is fed directly to text-to-speech."""
+Output ONLY the exact words to be spoken aloud. No labels, no headers, no markdown, no stage directions, no quotation marks, no emoji — just the plain narration text, since it is fed directly to text-to-speech.
+
+One more rule: never mention service records, maintenance history, or repair documentation, and never suggest buyers check service records - we don't have that paperwork for most of our vehicles. Only state specific facts about this vehicle's condition and features that are explicitly given in the vehicle brief above."""
 
 
 def run(cmd):
