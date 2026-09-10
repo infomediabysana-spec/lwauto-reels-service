@@ -3,19 +3,23 @@ Lawrenceville Motors — vehicle reel renderer (production core)
 
 Given vehicle data + real photo URLs, produces a finished 9:16 mp4:
 Ken Burns pan/zoom across the photos, price/mileage/CTA text overlay,
-a voiceover in Alex's own cloned voice (ElevenLabs) reading a script
-written in the dealership's brand voice, mixed with a background music bed.
+a voiceover reading a script written in the dealership's brand voice,
+mixed with a background music bed. Narration uses Microsoft Edge's free
+neural TTS (via the edge-tts package) rather than a paid cloned-voice API —
+no per-character billing, no account/quota to run out of.
 
 This is the same approach prototyped and tested in the dev sandbox,
 adapted to run with real internet access (downloads real photos,
-calls the real ElevenLabs/Anthropic services) instead of offline placeholders.
+calls the real Anthropic/edge-tts services) instead of offline placeholders.
 """
+import asyncio
 import io
 import os
 import subprocess
 import sys
 import tempfile
 
+import edge_tts
 import requests
 from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageEnhance
 
@@ -34,11 +38,12 @@ FONT_REG = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
 ASSETS_DIR = os.path.join(os.path.dirname(__file__), "assets")
 MUSIC_BED_PATH = os.path.join(ASSETS_DIR, "music_bed.mp3")
 
-# Voice: Alex's own ElevenLabs voice clone — same voice_id used by the daily
-# educational-reel pipeline (lw-reel-render), so both video pipelines sound
-# like the same person.
-ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY")
-DEFAULT_VOICE = os.environ.get("ELEVENLABS_VOICE_ID", "dAVeTABuBwdSUlO93XJl")
+# Voice: Microsoft Edge's free neural TTS (via the edge-tts package) — no
+# API key, no account, no per-character cost. "Andrew" is a natural-sounding
+# US male voice; override with EDGE_TTS_VOICE if a different one is wanted.
+# (Previously used ElevenLabs with Alex's cloned voice; switched back after
+# the ElevenLabs account ran out of monthly credits — see EDGE_TTS_VOICE.)
+DEFAULT_VOICE = os.environ.get("EDGE_TTS_VOICE", "en-US-AndrewMultilingualNeural")
 
 # Script: Claude writes the narration in the dealership's brand voice
 # (family owned, no tricks; plain and conversational, not salesy) instead of
@@ -145,28 +150,22 @@ def fetch_photo(url, timeout=20):
 
 
 def synthesize_voice(text, out_mp3, voice_id=None):
-    """Calls ElevenLabs TTS with Alex's cloned voice and writes an mp3."""
-    if not ELEVENLABS_API_KEY:
-        raise RuntimeError("ELEVENLABS_API_KEY not set")
-    voice_id = voice_id or DEFAULT_VOICE
-    resp = requests.post(
-        f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}",
-        headers={
-            "xi-api-key": ELEVENLABS_API_KEY,
-            "Content-Type": "application/json",
-            "Accept": "audio/mpeg",
-        },
-        json={
-            "text": text,
-            "model_id": "eleven_multilingual_v2",
-            "voice_settings": {"stability": 0.5, "similarity_boost": 0.75},
-        },
-        timeout=60,
-    )
-    if not resp.ok:
-        raise RuntimeError(f"ElevenLabs TTS failed ({resp.status_code}): {resp.text[:300]}")
-    with open(out_mp3, "wb") as f:
-        f.write(resp.content)
+    """Calls Microsoft Edge's free neural TTS (via edge-tts) and writes an mp3.
+    voice_id here is an edge-tts voice name (e.g. "en-US-AndrewMultilingualNeural"),
+    not an ElevenLabs voice_id — kept as the same parameter name/position so
+    callers (make_voiceover, server.py's /tts-sample) didn't need to change."""
+    voice = voice_id or DEFAULT_VOICE
+
+    async def _synthesize():
+        communicate = edge_tts.Communicate(text, voice)
+        await communicate.save(out_mp3)
+
+    try:
+        asyncio.run(_synthesize())
+    except Exception as e:
+        raise RuntimeError(f"edge-tts synthesis failed (voice={voice}): {e}")
+    if not os.path.exists(out_mp3) or os.path.getsize(out_mp3) == 0:
+        raise RuntimeError(f"edge-tts produced no audio output (voice={voice})")
 
 
 def make_voiceover(text, out_wav, voice=None):
