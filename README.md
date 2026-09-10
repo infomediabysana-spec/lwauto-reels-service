@@ -1,4 +1,5 @@
 # Lawrenceville Motors — Reel Renderer
+_Redeploy trigger: force Render to pick up the edge-tts switch above (was stuck on an old build still calling ElevenLabs)._
 
 Small always-on web service: given a vehicle's photos + data, renders a
 9:16 Ken Burns video with a Claude-written, brand-voice script read by a
